@@ -1,0 +1,228 @@
+			       bitzify 0.2 alpha
+
+GETTING STARTED:
+================
+
+You need "taglib" for the audiotags utility:
+http://developer.kde.org/~wheeler/taglib.html
+
+pkg-config is used to determine the compiler and linker flags for taglib.
+
+Run "make" to compile the following helper utilities written in C:
+
+audiotags	# extracts metatags from Ogg/MP3/FLAC.
+first20		# encodes the first 20 bytes of a file as a hexadecimal string.
+urlencode	# encodes unsafe characters as % HEX HEX.
+htmlencode	# encodes non-ASCII characters as numeric character references.
+
+Run "make install" the executables into "$PREFIX/bin/".
+
+You'll need the following additional tools:
+
+sh		# A functional bourne shell. mksh, ksh, bash are fine, too.
+mplayer		# identify media files
+file		# determine mime type
+curl		# submit metadata to bitzi.com
+bitter		# file hashing of bitprints (unless it's all cached)
+bc		# mathematical calculations
+ogginfo		# extract average bitrate from Ogg/Vorbis files
+
+bitter is available here:
+http://ghostwhitecrab.de/bitter/
+
+
+USAGE:
+======
+
+In order to extract metadata from FILE run
+
+	bitzify --meta FILE
+
+Note that bitzify accepts only a single FILE argument. This is
+meant to avoid problems with pathnames containing whitespaces
+which may accidently be unquoted and result in multiple arguments.
+
+By default the metadata is just printed to standard output. Use
+
+	bitzify --meta --output=OUTPUT FILE
+
+to print it to file OUTPUT instead. You can use the generated
+file OUTPUT later with the --import option, in order to send it
+to bitzi.com.
+
+In order to submit metadata to bitzi.com log into your bitzi
+account with your web browser, extract the the ad_user_login
+cookie and store it in ~/.bitzify/cookie like this:
+
+Set-Cookie: ad_user_login=SECRET
+
+Then run
+
+	bitzify --submit --meta FILE
+
+for extracting metadata from FILE and submitting it to bitzi.com.
+If you store the cookie elsewhere use
+
+	bitzify --submit --cookie=COOKIE --meta FILE
+
+whereas COOKIE is the path of the file which holds the cookie.
+
+When you submit metadata, you will will be asked whether you want
+to edit the metadata before it is actually submitted. This can be
+disabled with --batch.
+
+It is recommendable to log all submissions to bitzi, so that
+you know which files have been processed and double-check if
+the metadata was submitted as desired. Thus use
+
+	bitzify --submit --meta --log-file=LOG [...]
+
+to append the metadata to LOG.
+
+If you want to submit preprocessed metadata files instead use
+the --import option:
+
+	bitzify --import --submit --cookie COOKIE FILE
+
+Now FILE refers to the file holding the metadata. This is useful
+if you want to add/modify/correct metadata for many files and
+then submit them later to bitzi.
+
+If your files are already hashed by gtk-gnutella, use the
+option --sha1-cache option to avoid rehashing them:
+
+	bitzify --sha1-cache=~/.gtk-gnutella/sha1_cache [...]
+
+If the file is not found in CACHE, the bitprint will be calculated
+with bitter. To avoid specifying this argument each time, you
+can also copy the cache file to ~/.bitzify/sha1_cache or create
+such a symlink.
+
+If something goes wrong you might find file names "bitzify-tmp.*"
+in your temporary directory ($TMPDIR or /tmp). Just delete them
+when you are sure you are not using bitzify currently.
+
+
+ENVIRONMENT VARIABLES:
+======================
+
+bitzify uses the following environment variables:
+
+TMPDIR	Directory used for temporary files. Defaults to "/tmp".
+VISUAL	Editor to use for editing metadata. Defaults to "$EDITOR"
+        and if $EDITOR is also unset or empty, "vi" is used.
+EDITOR  See VISUAL.
+
+
+EXAMPLES:
+=========
+
+# Print metadata for each FLAC file in "/audio/" for testing.
+for f in /audio/*.flac; do bitzify --meta "$f"; done
+
+# Submit metadata of all Ogg files in the current directory
+for f in ./*.ogg
+do
+    bitzify --submit --meta --cookie=~/.cookie "$f"
+done
+
+# Submit a "Best version" judgement of all MP3 files in the
+# current directory for which Bitzi already provides tickets.
+for f in ./*.mp3
+do
+    bitzify --submit --judgement=best "$f"
+done
+
+# Same as above but submit the metadata too. Files that have no
+# Bitzi tickets yet cannot be judged.
+for f in ./*.mp3
+do
+    bitzify --submit --meta --judgement=best "$f"
+done
+
+
+ADVANCED EXAMPLES:
+==================
+
+# For each file in the current directory, create a file containing the
+# bitzi metadata and use the sha1 cache.
+for f in ./*
+do
+    meta=~/tmp/"${f##*/}.bitzi"
+    bitzify --meta --sha1-cache=~/.gtk-gnutella/sha1_cache \
+        --output="$meta" "$f"
+done
+
+# If you modified the metadata files you might want to check the
+# metadata files. The check is only rudimentary though:
+for meta in ~/tmp/*.bitzi
+do
+    bitzify --import "$meta" >/dev/null && continue
+    echo "ERROR: Damaged meta data: \"$meta\""
+done
+
+# Submit all generated metadata files to bitzi and don't ask for
+# confirmation.
+for meta in ~/tmp/*.bitzi
+do
+    bitzify --submit --cookie=~/.cookie --batch --import -- "$meta"
+done
+
+
+CAVEATS:
+========
+
+For your own and your files' safety, use an account that has only read
+access to the files and directories.
+
+Do not judge mislabeled files negatively! Instead submit metadata
+with an appropriate filename.
+
+Sometimes metatags are not correctly encoded and must be corrected
+manually. Make sure you don't submit garbage.
+
+Bitzi doesn't really have Unicode handling either. All Non-ASCII tags
+are problematic. However, all submitted data should use Unicode.
+
+Since mplayer does not provide an accurate duration for audio files
+in many cases, audiofiles are decoded to PCM using a fixed sample rate,
+8-bit mono samples, so that the duration can be calculated precisely.
+Obviously this is rather slow.
+
+Whether an MP3 uses VBR is not detected currently.
+
+bitzify is mostly useful for audio and video files.
+
+The following non-exhaustive list show which files and codecs are
+typically recognized.
+
+Audio files:
+MP3 (mpg/mp3)
+Ogg/Vorbis (ogg/oga)
+FLAC (flac)
+
+Video files:
+Xvid (avi/mkv)
+DivX (avi/mkv)
+Matroska (mkv)
+MPEG-1 (mpg/mpeg)
+MPEG-2 (mpg/mpeg2)
+MPEG-4 ASP [Xvid/DivX/WMV3] (avi/mp4/mkv)
+MPEG-4 AVC [H.264/AVC] (avi/mp4/mkv)
+OGM (Xvid/DivX) (ogm)
+
+Archives:
+ZIP (application/x-zip)
+RAR (application/x-rar)
+
+Text:
+TXT (text/plain)
+
+
+TODO:
+=====
+
+ - Add support MPEG-4 audio (AAC), WAV (PCM), MPEG-2 audio.
+ - Login so that user doesn't have pass the cookie manually.
+ - Double-check "confirmed" tags, ask user.
+
