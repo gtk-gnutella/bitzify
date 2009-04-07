@@ -1,0 +1,1240 @@
+#! /bin/sh
+# THIS FILE IS PUBLIC DOMAIN. NO WARRANTY OF ANY KIND. NO RIGHTS RESERVED.
+# Purpose: Generate a Bitzi form for audio and video files.
+
+set -e
+
+create_tempfile()
+{
+	tmpdir="${TMPDIR:-/tmp}"
+	echo "$(mktemp "${tmpdir}/bitzify-tmp.XXXXXX")" || exit 1
+}
+
+get_cookie()
+{
+	if [ X = "X$cookie_file" ]
+	then	echo 'ERROR: cookie_file is unset.' >&2
+		exit 1
+	fi
+
+	printf 'STATUS: Loading Bitzi sign-in page...' >&2
+
+	curl \
+		${proxy:+--proxy "$proxy"} \
+		--globoff \
+		--location \
+		--silent \
+		--url 'http://bitzi.com/register/' \
+		> "$tempfile2" || exit 1
+
+{
+	sed -n 's,^.*[<]input \([^>]*\)[>].*$,\1,p' \
+	| grep -oE 'name=("[^"]*"|[^[:space:]]*)([[:space:]]*value=("[^"]*"|[^[:space:]]*))?' \
+	| sed 's,^name=,,' \
+	| sed 's,",,g' \
+	| sed 's,[[:space:]]*value,,'
+} < "${tempfile2}" > "$tempfile" || exit 1
+
+	if [ "X$debug" != X ]; then cat "${tempfile2}" >&2; fi
+
+data=
+while read -r line
+do
+	if [ "X$debug" != X ]; then printf '%s\n' "$line" >&2; fi
+
+	case "$line" in
+	return_url=*|time=*|token_id=*|hash=*|persistent_cookie_p=*)
+		name="${line%%=*}"
+		value="${line#*=}"
+		data="$data${data:+"&"}${name}=$(urlencode "$value")"
+		;;
+	esac
+done < "$tempfile"
+
+	printf '\rSTATUS: Loaded Bitzi sign-page.                       \n' >&2
+
+	printf 'Enter your Bitzi username: ' >&2
+	read -r username < /dev/tty
+	printf 'Enter your Bitzi password: ' >&2
+#	stty -echo
+	read -r password < /dev/tty
+#	stty echo
+
+	data="$data${data:+"&"}screen_name=$(urlencode "$username")"
+	data="$data${data:+"&"}password=$(urlencode "$password")"
+
+	printf 'STATUS: Signing in...\n' >&2
+
+{
+cat << EOF
+$data
+EOF
+} | curl \
+	${proxy:+--proxy "$proxy"} \
+	--dump-header "$tempfile2" \
+	--globoff \
+	--silent \
+	--data-ascii @/dev/stdin \
+	--url 'http://bitzi.com/register/user-login' \
+	> "$tempfile" || exit 1
+
+	if [ "X$debug" != X ]; then cat "$tempfile" >&2; fi
+	if [ "X$debug" != X ]; then cat "$tempfile2" >&2; fi
+
+	cookie="$(sed -n 's,^\(Set-Cookie: ad_user_login=[a-zA-Z0-9%]*\).*$,\1,p' < "$tempfile2")"
+
+	if [ X = "X$cookie" ]
+	then	echo >&2
+		echo 'ERROR: Sign in failed.' >&2
+		exit 1
+	fi
+
+	cat << EOF > "${cookie_file}"
+$cookie
+EOF
+
+	printf '\rSTATUS: Signed in. Ready to submit.                 \n' >&2
+}
+
+get_cached_data()
+{
+	if [ X = "X$pathname" ]
+	then	echo "ERROR: pathname is empty." >&2
+		exit 1
+	fi
+	if [ X = "X$sha1_cache" ]
+	then	echo "ERROR: sha1_cache is empty." >&2
+		exit 1
+	fi
+	
+	awk '
+	BEGIN {	name = ARGV[2]; ARGC--; result = 1; }
+	{
+		line = $0;
+		gsub("^[^/]*", "", line);
+		if (name == line) { print $0; result = 0; exit }
+	}
+	END { exit result } ' "$sha1_cache" "$pathname"
+}
+
+get_bitprint()
+{
+	bitprint=
+	pathname="$1"
+	if [ X != "X$sha1_cache" ]
+	then
+		if cached="$(get_cached_data)"
+		then
+			mtime=$(get_mtime "$file")
+
+			cached_urn="${cached%%\	*}"
+			cached="${cached#*\	}"
+			cached_filesize="${cached%%\	*}"
+			cached="${cached#*\	}"
+			cached_mtime="${cached%%\	*}"
+			cached="${cached#*\	}"
+			cached_pathname="${cached}"
+
+			if	[ "$pathname" = "$cached_pathname" ] && \
+				[ "$filesize" = "$cached_filesize" ] && \
+				[ "$mtime" = "$cached_mtime" ]
+				then	bitprint="$cached_urn"
+			fi
+		fi
+	fi
+
+	# If cache miss -> calculate hash
+	case "$bitprint" in
+	urn:bitprint:*)	;;
+	*)		printf "STATUS: Calculating bitprint..." >&2
+			bitprint="$(bitter -q "$pathname")" || exit 1
+			printf "\rSTATUS: Calculated bitprint.           \n" >&2
+			;;
+	esac
+
+	case "$bitprint" in
+	urn:bitprint:*)
+		bitprint="${bitprint##*:}"
+		;;
+	*)	echo >&2
+		echo 'ERROR: bitter failed.'>&2
+		exit 1
+		;;
+	esac
+	echo "$bitprint"
+}
+
+get_mtime()
+{
+	mtime=
+	case "$(uname -s)" in
+	*BSD)	mtime="$(stat -t '%s' -f '%Sm' "$file")" || exit 1;;
+	*Linux)	mtime="$(stat --format '%Y' "$file")" || exit 1;;
+	esac
+	if [ X = "X$mtime" ]
+	then echo "See stat(1) for parameter handling on \"$(uname -s)\"." >&2
+	     exit 1
+	fi
+	echo "$mtime"
+}
+
+get_filesize()
+{
+	filesize=
+	case "$(uname -s)" in
+	*BSD)	filesize="$(stat -f '%z' "$file")" || exit 1;;
+	*Linux)	filesize="$(stat --format '%s' "$file")" || exit 1;;
+	esac
+	if [ X = "X$filesize" ]
+	then echo "See stat(1) for parameter handling on \"$(uname -s)\"." >&2
+	     exit 1
+	fi
+	echo "$filesize"
+}
+
+escape_unicode()
+{
+#	text="$(htmlencode "$@")" || exit 1
+	text="$(urlencode "$@")" || exit 1
+	printf '%s' "$text"
+}
+
+submit_judgement()
+{
+	if [ X = "X$bitprint" ]
+	then	echo "ERROR: bitprint not set." >&2
+		exit 1
+	fi
+
+	if [ X = "X$judgement" ] && [ X != "X$explanation"]
+	then echo "ERROR: The option --explanation requires --judgement." >&2
+	     exit 1
+	fi
+
+	case "$judgement" in
+	4|[Bb][Ee][Ss][Tt]*)					judgement=4;;
+	3|[Rr][Ee][Cc][Oo][Mm][Mm][Ee][Nn][Dd][Ee][Dd])		judgement=3;;
+	2|[Cc][Oo][Mm][Pp][Ll][Ee][Tt][Ee])			judgement=2;;
+	0|[Nn][Oo][Rr][Mm][Aa][Ll])				judgement=0;;
+	-2|[Ss][Uu][Bb][Ss][Tt][Aa][Nn][Dd][Aa][Rr][Dd])	judgement=-2;;
+	-3[Dd][Aa][Mm][Aa][Gg][Ee][Dd])				judgement=-3;;
+	-3|[Ii][Nn][Cc][Oo][Mm][Pp][Ll][Ee][Tt][Ee])		judgement=-3;;
+	-4|[Dd][Aa][Nn][Gg][Ee][Rr][Oo][Uu][Ss])		judgement=-4;;
+	-4|[Mm][Ii][Ss][Ll][Ee][Aa][Dd][Ii][Nn][Gg])		judgement=-4;;
+	*)
+		echo "ERROR: Unknown judgement value: \"$judgement\"" >&2
+		exit 1
+		;;
+	esac
+
+	if [ X != "X$judgement$explanation" ]
+	then
+		sha1="${bitprint%.*}" || exit 1
+		data="bitprint=${sha1}&judgement=${judgement}"
+
+		if [ X != "X$explanation" ]
+		then data="${data}&explanation=$(escape_unicode "${explanation}")"
+		fi
+
+		printf 'STATUS: Submitting judgement...' >&2
+
+		echo "$data" | curl \
+			${proxy:+--proxy "$proxy"} \
+			--globoff \
+			--location \
+			--silent \
+			--cookie "$cookie_file" \
+			--data-ascii @/dev/stdin \
+			--url 'http://bitzi.com/lookup/judge' \
+			> "$tempfile" || exit 1
+
+		if [ "X$debug" != X ]; then cat "$tempfile" >&2; fi
+
+		if grep -qF "/rdf/urn:sha1:${sha1}" "$tempfile"
+		then	printf '\rSTATUS: Judgement submitted.          \n' >&2
+		else	echo >&2
+			echo 'ERROR: Failed to submit judgement.' >&2
+			exit 1
+		fi
+	fi
+}
+
+print_help()
+{
+	usage_text="\
+Usage: ${0##*/} [OPTIONS] FILE
+Options:
+  --submit           Submit data to bitzi.com.
+  --print            Write the data but don't submit it (default operation).
+  --meta             Generate metadata for submission.
+  --import           Don't generate metadata but read it from FILE.
+  --judgement=VALUE  Add a judgement.
+  --explanation=TEXT Provide an optional explanation for the judgement.
+  --batch            Don't ask for confirmations or editing. 
+  --signin           Log into your bitzi account to obtain a cookie. 
+  --output=PATH      Write output to PATH.
+  --cookie=PATH      The authentication cookie for bitzi.com.
+  --proxy=HOST       The proxy server to use for HTTP requests.
+  --sha1-cache=PATH  Path to the SHA-1 cache file.
+  --log=PATH         Log submitted metadata to given file.
+  --editor=TOOL      Editor to use for metadata editing.
+  --debug            Print additional debug output.
+  --tags             Display a list of available tags.
+  --help             Display this message.
+
+If "\$HOME/.bitzify" exists, the following defaults apply:
+  --sha1_cache="\"\$HOME/.bitzify/sha1_cache\""
+  --cookie="\"\$HOME/.bitzify/cookie\""
+  --log="\"\$HOME/.bitzify/submission.log\""
+
+If the environment variable VISUAL is set,
+  --editor=\$VISUAL is used as default, otherwise \$EDITOR or vi.
+"
+	printf '%s' "$usage_text"
+}
+
+print_tags()
+{
+	cat << EOF
+tag.file.length=integer
+tag.file.length=hex
+
+tag.filename.filename=string
+
+tag.objective.description=string
+
+tag.subjective.comment=string
+
+tag.url.url=string
+tag.url.title=string (optional)
+tag.url.description=string (optional)
+
+tag.autiotrack.title=string
+tag.autiotrack.artist=string (optional)
+tag.autiotrack.album=string (optional)
+tag.autiotrack.tracknumber=integer (optional)
+tag.autiotrack.year=integer (optional)
+
+tag.vorbis.bitrate=integer
+tag.vorbis.duration=integer
+tag.vorbis.samplerate=integer
+tag.vorbis.channels=integer
+tag.vorbis.bitrate=integer
+tag.vorbis.encoder=string (optional)
+tag.vorbis.audio_sha1=base32 (optional)
+
+tag.mp3.bitrate=integer
+tag.mp3.vbr=n|y (optional)
+tag.mp3.duration=integer
+tag.mp3.samplerate=integer
+tag.mp3.stereo=y|n
+tag.mp3.bitrate=integer
+tag.mp3.encoder=string (optional)
+tag.mp3.audio_sha1=base32 (optional)
+
+tag.image.height=integer
+tag.image.width=integer
+tag.image.bpp=integer
+tag.image.format=BMP|GIF|JPEG|PNG (optional)
+tag.id3genre.genre=integer
+
+tag.wav.samplesize=integer
+tag.wav.duration=integer
+tag.wav.samplerate=integer
+tag.wav.channels=integer
+tag.wav.audio_sha1=base32 (optional)
+
+tag.broadcastprogram.broadcastdate=YYYY-MM-DD
+tag.broadcastprogram.broadcaster=string (optional)
+tag.broadcastprogram.series=string (optional)
+tag.broadcastprogram.show=string (optional)
+tag.broadcastprogram.medium=1=radio 2=tv
+
+tag.relatabletrm.trmid=string
+
+tag.society.society=string (see http://bitzi.com/society)
+
+tag.md5.md5=base32
+
+tag.uuhash.uuhash=base64 (sig2dat style)
+
+tag.ed2k.ed2khash=hex
+
+tag.video.format=QuickTime|AVI|MPEG-1|MPEG-2
+tag.video.height=integer
+tag.video.width=integer
+tag.video.fps=integer (optional)
+tag.video.duration=integer (optional)
+tag.video.bitrate=integer (optional)
+tag.video.codec=string (optional)
+
+tag.crc32.crc32=hex
+
+tag.tiger.tree=base32
+EOF
+}
+
+generate_metadata()
+{
+mime_type="$(file -bi "$file")"
+case "$mime_type" in
+application/ogg)
+	mime_type="$(file -b "$file")"
+	case "$mime_type" in
+	*OGM*video*)
+		mime_type='video/x-ogg'
+		;;
+	*Vorbis*audio*)
+		mime_type='audio/ogg'
+		;;
+	*) 	printf 'ERROR: Unknown Ogg sub-type: %s\n' "$mime_type" >&2
+		exit 1
+		;;
+	esac
+	;;
+esac
+
+case "$mime_type" in
+audio/*|video/*|application/octet-stream)
+# NOTE: With older versions of mplayer -identify cannot be used with
+#       -really-quiet because it suppresses the tag output.
+info="$(mplayer -afm ffmpeg -vfm ffmpeg -frames 0 -ao null -vo null -identify "$file" 2>/dev/null \
+	 | grep -E '^(ID_AUDIO_|ID_VIDEO_|ID_LENGTH=|ID_DEMUXER=)')" || {
+
+	
+	echo "ERROR: mplayer could not identify file." >&2
+	exit 1
+}
+;;
+*)
+info=
+;;
+esac
+
+echo "$info" | {
+
+audio_album=
+audio_artist=
+audio_bitrate=
+audio_codec=
+audio_encoder=
+audio_format=
+audio_nch=
+audio_samplerate=
+audio_stereo=
+audio_title=
+audio_tracknumer=
+audio_year=
+audio_vbr= # XXX VBR detection not supported yet
+demuxer=
+duration=
+file_format=
+video_bitrate=
+video_codec=
+video_format=
+video_fps=
+video_height=
+video_width=
+
+while read line
+do
+	case "$line" in
+	ID_AUDIO_BITRATE=*)	audio_bitrate="${line#*=}";;
+	ID_AUDIO_CODEC=*)	audio_codec="${line#*=}";;
+	ID_AUDIO_FORMAT=*)	audio_format="${line#*=}";;
+	ID_AUDIO_NCH=*)		audio_nch="${line#*=}";;
+	ID_AUDIO_RATE=*)	audio_samplerate="${line#*=}";;
+	ID_DEMUXER=*)		demuxer="${line#*=}";;
+	ID_LENGTH=*)		duration="${line#*=}";;
+	ID_VIDEO_BITRATE=*)	video_bitrate="${line#*=}";;
+	ID_VIDEO_CODEC=*)	video_format="${line#*=}";;
+	ID_VIDEO_FORMAT=*)	video_codec="${line#*=}";;
+	ID_VIDEO_FPS=*)		video_fps="${line#*=}";;
+	ID_VIDEO_HEIGHT=*)	video_height="${line#*=}";;
+	ID_VIDEO_WIDTH=*)	video_width="${line#*=}";;
+	esac
+done
+
+# Bitzi wants the duration in milliseconds (integer)
+case "$duration" in
+[0-9]*) duration="$(printf '%s * 1000\n' "$duration" | bc)"
+	duration="${duration%%.*}"
+	;;
+*)	duration=
+	;;
+esac
+
+case "$mime_type" in
+audio/mpeg)
+	case "$audio_format" in
+	80|85)	audio_format='mp3';;
+	*)	printf 'ERROR: Unknown audio codec: %s\n' "$audio_format" >&2
+		exit 1;;
+	esac
+	;;
+
+audio/ogg)
+	case "$audio_format" in
+	vrbs)	audio_format='vorbis';;
+	*)	printf 'ERROR: Unknown audio codec: %s\n' "$audio_format" >&2
+		exit 1;;
+	esac
+	case "$video_format$video_codec" in
+	'')	;;
+	*)	# some OGM files are identified as Ogg audio files
+		mime_type='video/x-ogg';;
+	esac
+	;;
+
+application/octet-stream)
+	case "$demuxer" in
+	asf)	if [ X != "X$video_format" ]
+		then	audio_format=
+			mime_type='video/x-ms-asf'
+		fi
+		;;
+	esac 
+	;;
+esac
+
+case "$mime_type" in
+audio/*)
+	# decode to pcm for reliable "duration", with VBR mplayer lies
+	printf 'STATUS: Calculating duration of audio track...' >&2
+	duration="$(mplayer -really-quiet -vo null -af resample=8000,format=u8,channels=1 -ao pcm:nowaveheader:file=/dev/stdout -- "$file" | wc -c)" || exit 1
+	duration="$(printf '%s\n' "$duration / 8" | bc)" || exit 1
+	printf '\rSTATUS: Calculated duration of audio track.          \n' >&2
+	;;
+esac
+
+# Bitzi wants an integer (milliseconds)
+duration="${duration%%.*}"
+test "$duration" = 0 && duration=
+
+case "$audio_bitrate" in
+'');;
+*)
+	case "$mime_type" in
+	audio/ogg)
+		# Determine average bitrate instead of nominal bitrate
+		audio_bitrate="$(ogginfo "$file" | \
+			LC_ALL=C grep -aoi 'Average bitrate: *[0-9.]*')"
+		audio_bitrate="${audio_bitrate##*: }"
+		;;
+	*)
+		# Bitzi expect kbps
+		audio_bitrate="$(printf '%s\n' "$audio_bitrate / 1000" | bc)"
+		;;
+	esac
+	audio_bitrate="${audio_bitrate%%.*}"
+	;;
+esac
+test "$audio_bitrate" = 0 && audio_bitrate=
+
+
+case "$mime_type" in
+'audio/flac'|'audio/x-flac'|'audio/mpeg'|'audio/ogg')
+	mime_type='audio/flac'
+	video_format=
+
+	tag="$(audiotags --quiet --show-album "$file")"
+	audio_album="${tag#*=}"
+	tag="$(audiotags --quiet --show-artist "$file")"
+	audio_artist="${tag#*=}"
+	tag="$(audiotags --quiet --show-title "$file")"
+	audio_title="${tag#*=}"
+	tag="$(audiotags --quiet --show-tracknumber "$file")"
+	audio_tracknumber="${tag#*=}"
+	tag="$(audiotags --quiet --show-year "$file")"
+	audio_year="${tag#*=}"
+
+	case "$audio_nch" in
+	1) audio_stereo='n';;
+	2) audio_stereo='y';;
+	esac
+	;;
+
+video/mpeg)
+	case "$video_format" in
+	mpegpes|mpeg12)	video_format='video/mpeg';;
+	*)		video_format=;;
+	esac
+	audio_format=
+	;;
+
+video/mp4)
+	case "$video_format" in
+	ffodivx)	video_format='video/mp4'
+			video_codec='xvid'
+			;;
+	avc1|ffh264|x264)	video_format='video/mp4'
+			video_codec='H.264'
+			;;
+	*)		video_format=
+			;;
+	esac
+	audio_format=
+	;;
+
+'video/x-msvideo'|'video/mp2p'|'video/3gpp'|'video/x-ogg'|'video/x-ms-asf')
+	video_format="$mime_type"
+	audio_format=
+	;;
+
+application/x-rar)
+	audio_format=
+	video_format=
+	file_format='rar'
+	;;
+
+application/x-zip)
+	audio_format=
+	video_format=
+	file_format='zip'
+	;;
+
+text/plain|text/plain\;*)
+	audio_format=
+	video_format=
+	file_format='txt'
+	;;
+
+application/x-empty)
+	audio_format=
+	video_format=
+	file_format='none'
+	;;
+
+*)	mime_type=
+	audio_format=
+	video_format=
+	;;
+esac
+
+case "$mime_type" in
+'')
+	mime_type="$(file -b "$file")"
+	case "$mime_type" in
+	*Matroska*)
+		case "$video_codec" in
+		'');;
+		*)	video_format='video/x-matroska';;
+		esac
+	esac
+	;;
+esac
+
+case "$video_format$audio_format$file_format" in
+'')
+	printf 'ERROR: Unsupported format: %s\n' "$mime_type" >&2
+	exit 1;;
+esac
+
+# Normalize video codec
+case "$video_codec" in
+[Xx][Vv][Ii][Dd]|[Dd][Xx]50|[Ff][Mm][Pp]4|mp4v|3[iI][vV]2)
+	video_codec='xvid'
+	;;
+
+[Aa][Vv][Cc]1|[HhxX]264|[Hh].264)
+	video_codec='H.264'
+	;;
+
+[Dd][Ii][Vv][Xx])
+	video_codec='divx'
+	;;
+
+[Mm][Pp]43|[Dd][Ii][Vv]3)
+	video_codec='div3'
+	;;
+
+[Ww][Mm][Vv]3)
+	video_codec='wmv3'
+	;;
+
+0x10000001)	
+	case "$video_format" in
+	video/mpeg)	video_codec='MPEG-1';;
+	*)		video_codec=;;
+	esac
+	;;
+
+0x10000002)
+	case "$video_format" in
+	video/mpeg|video/mp2p)	video_codec='MPEG-2';;
+	*)			video_codec=;;
+	esac
+	;;
+
+mpg2)
+	video_codec='MPEG-2'
+	;;
+
+''|*)
+	video_codec=
+	;;
+
+esac
+
+case "$file_format" in
+'')
+	case "$video_codec$audio_format" in
+	'')	printf 'ERROR: Unsupported codec: %s\n' "$mime_type" >&2
+		exit 1
+		;;
+	esac
+	;;
+esac
+
+# Bitzi accepts only year but this is often "year/month/day"
+case "$audio_year" in
+[0-9][0-9][0-9][0-9]*)
+	audio_year="$(printf '%s' "$audio_year" | cut '-c1-4' )"
+	;;
+*)	audio_year=
+	;;
+esac
+
+bitprint=$(get_bitprint "$pathname")
+first20="$(first20 "$file")" || exit 1
+filename="${file##*/}"
+
+	{
+	# Common tags first
+	echo 'head.agent=bitzify/0.2a'
+	echo 'head.version=S0.4'
+	echo "bitprint=$bitprint"
+	echo "tag.file.length=$filesize"
+	echo "tag.file.first20=$first20"
+	echo "tag.filename.filename=$filename"
+
+	case "$audio_format" in
+	'');;
+	*)
+		echo "tag.audiotrack.album=$audio_album"
+		echo "tag.audiotrack.artist=$audio_artist"
+		echo "tag.audiotrack.title=$audio_title"
+		echo "tag.audiotrack.tracknumber=$audio_tracknumber"
+		echo "tag.audiotrack.year=$audio_year"
+		;;
+	esac
+
+	case "$audio_format" in
+	mp3)
+		echo "tag.mp3.bitrate=$audio_bitrate"
+		echo "tag.mp3.duration=$duration"
+		echo "tag.mp3.encoder=$audio_encoder"
+		echo "tag.mp3.samplerate=$audio_samplerate"
+		echo "tag.mp3.stereo=$audio_stereo"
+		echo "tag.mp3.vbr=$audio_vbr"
+		;;
+	vorbis)
+		echo "tag.vorbis.bitrate=$audio_bitrate"
+		echo "tag.vorbis.channels=$audio_nch"
+		echo "tag.vorbis.duration=$duration"
+		echo "tag.vorbis.samplerate=$audio_samplerate"
+		;;
+	esac
+
+	case "$video_codec" in
+	'');;
+	*)
+		# Bitzi only accepts integers (i.e. not 23.976), round up
+		video_fps="$(echo "$video_fps + 0.5" | bc)"
+		video_fps="${video_fps%%.*}"
+		test "$video_fps" = 0 && video_fps=
+
+		# Bitzi expect kbps (integer)
+		video_bitrate="$(echo "$video_bitrate / 1000" | bc)"
+		video_bitrate="${video_bitrate%%.*}"
+		test "$video_bitrate" = 0 && video_bitrate=
+
+		echo "tag.video.format=$video_format"
+		echo "tag.video.codec=$video_codec"
+		echo "tag.video.duration=$duration"
+		echo "tag.video.width=$video_width"
+		echo "tag.video.height=$video_height"
+		echo "tag.video.fps=$video_fps"
+		echo "tag.video.bitrate=$video_bitrate"
+		;;
+	esac
+
+	echo "# Best version(4), Recommended(3), Complete(2), Normal(0)"
+	echo "# Substandard(-2), Incomplete/Damaged(-3), Dangerous/Misleading(-4)"
+	echo "judgement=$judgement"
+	echo "explanation=$explanation"
+	echo "# Optional objective description"
+	echo "tag.objective.description="
+
+	}
+}
+}
+
+import_metadata()
+{
+	read line < "$file"
+	case "$line" in
+	head.agent=*);;
+	*)
+		echo "ERROR: Input does not contain valid metadata." >&2
+		exit 1
+	esac
+	# Run some basic checks when importing metadata
+	while read line
+	do
+		case "$line" in
+		'')
+			continue
+			;;
+		[a-z][a-z0-9]*=*|'#'*)
+			printf '%s\n' "$line"
+			;;
+		*)
+			echo "ERROR: Bad line in metadata file: \"$line\"" >&2
+			exit 1
+			;;
+		esac
+	done < "$file"
+}
+
+submit_metadata()
+{
+
+if [ X != "X$log_file" ]
+then # Log all submitted forms
+	{
+		echo
+		echo "FILE: $pathname"
+		cat "$tempfile"
+	} >> "$log_file"
+fi
+
+data=
+while read line
+do
+	case "$line" in
+	''|'#'*|[a-z]*=|judgement=*|explanation=*)
+		continue
+		;;
+	bitprint=*)
+		bitprint="${line#*=}"
+		;;
+	[a-z][a-z0-9]*=*)
+		;;
+	*)
+		echo "ERROR: Bad line in metadata file: \"$line\"" >&2
+		exit 1
+		;;
+	esac
+	name="${line%%=*}"
+	value="${line#*=}"
+	data="$data${data:+"&"}${name}=$(urlencode "$value")"
+done < "$tempfile" 
+
+if [ X = "X$bitprint" ]
+then	echo "ERROR: bitprint is missing." >&2
+	exit 1
+fi
+
+printf 'STATUS: Submitting metadata...' >&2
+
+echo "$data" | curl \
+        ${proxy:+--proxy "$proxy"} \
+	--globoff \
+	--location \
+	--silent \
+        --cookie "$cookie_file" \
+	--data-ascii @/dev/stdin \
+	--url 'http://bitzi.com/lookup/' \
+	> "${tempfile2}" || exit 1
+
+if [ "X$debug" != X ]; then cat "${tempfile2}" >&2; fi
+
+{
+	sed -n 's,^.*[<]input \([^>]*\)[>].*$,\1,p' \
+	| grep -oE 'name=("[^"]*"|[^[:space:]]*)([[:space:]]*value=("[^"]*"|[^[:space:]]*))?' \
+	| sed  's,^name=,,' \
+	| sed 's,",,g' \
+	| sed 's,[[:space:]]*value,,'
+} < "${tempfile2}" > "$tempfile" || exit 1
+
+success=
+send_confirmation=
+data=
+while read line
+do
+	if [ "X$debug" != X ]; then printf '%s\n' "$line" >&2; fi
+
+	case "$line" in
+	confirm.[a-z]*)		line="${line}=on"
+				;;
+	bitprint_id=*)		success='yes'
+				;;
+	confirmed=*)		send_confirmation='yes'
+				;;
+	bitprint=*)		success='yes'
+				continue
+				;;
+	esac
+	name="${line%%=*}"
+	value="${line#*=}"
+	data="$data${data:+"&"}${name}=$(urlencode "$value")"
+done < "$tempfile"
+
+case "$success" in
+yes)	printf '\rSTATUS: Metadata submitted.                           \n' >&2
+	;;
+*) 	{
+		echo
+		echo "ERROR: Submission failed."
+		echo "See \"${tempfile}\"."
+	} >&2
+	exit 1
+	;;
+esac
+
+printf '' > "$tempfile" || exit 1
+
+case "$send_confirmation" in
+yes)
+	printf 'STATUS: Submitting tag confirmation...' >&2
+
+	echo "$data" | curl \
+             ${proxy:+--proxy "$proxy"} \
+	     --globoff \
+	     --location \
+	     --silent \
+             --cookie "$cookie_file" \
+	     --data-ascii @/dev/stdin \
+	     --url 'http://bitzi.com/lookup/added_tag' \
+	     > "$tempfile" || exit 1
+
+	printf '\rSTATUS: Confirmed tags.                               \n' >&2
+
+	if [ "X$debug" != X ]; then cat "$tempfile" >&2; fi
+	;;
+esac
+}
+
+# Initialize variables
+editor="${VISUAL:-$EDITOR}"
+editor="${editor:-vi}"
+
+config_dir="${HOME}/.bitzify"
+cookie_file=
+sha1_cache=
+log_file=
+output=
+import=
+tempfile=
+tempfile2=
+submit=
+print='yes'
+ticket=
+batch=
+judgement=
+explanation=
+proxy=
+debug=
+cookie=
+filesize=
+
+if [ -d "$config_dir" ]
+then
+	sha1_cache="${config_dir}/sha1_cache"
+	test -f "$sha1_cache" || sha1_cache=
+
+	log_file="${config_dir}/submission.log"
+	test -f "$log_file" || log_file=
+
+	cookie_file="${config_dir}/cookie"
+	test -f "$cookie_file" || cookie_file=
+
+	if [ -f "${config_dir}/proxy" ]
+	then read proxy < "${config_dir}/proxy"
+	else proxy=
+	fi
+fi
+
+case "$PWD" in
+/*)	cwd="$PWD";;
+*)	cwd="$(pwd)";;
+esac
+
+case "$cwd" in
+/*);;
+*)
+	echo "ERROR: Cannot determine absolute path" >&2
+ 	exit 1;;
+esac
+
+# Remove trailing slash
+cwd="${cwd#/}"
+cwd="/${cwd%/}"
+
+trap 'rm -f "$tempfile" "$tempfile2"' 0
+trap 'rm -f "$tempfile" "$tempfile2"; exit 1' INT
+
+# Handle command line arguments
+while [ $# -gt 0 ]
+do
+case "$1" in
+--output=?*) 	output="${1#*=}"
+		;;
+--cookie=?*)	cookie_file="${1#*=}"
+		;;
+--proxy=?*)	proxy="${1#*=}"
+		;;
+--sha1-cache=?*)sha1_cache="${1#*=}"
+		;;
+--log=?*)	log_file="${1#*=}"
+		;;
+--editor=?*)	editor="${1#*=}"
+		;;
+--judgement=?*)	judgement="${1#*=}"
+		;;
+--explanation=?*)	explanation="${1#*=}"
+		;;
+--import) 	import='yes'
+		;;
+--meta)		meta='yes'
+		;;
+--submit)	submit='yes'
+		print=
+		;;
+--print)	submit=
+		print='yes'
+		;;
+--debug)	debug='yes'
+		;;
+--batch)	batch='yes'
+		;;
+--tags)		print_tags
+		exit 0
+		;;
+--signin)	signin='yes'
+		;;
+--help|-help|-h)
+		print_help
+		exit 0
+		;;
+--)		shift
+		break
+		;;
+-*)	
+		print_help >&2	
+		echo "ERROR: Unsupported argument \"$1\"" >&2
+		exit 1
+		;;
+*)		break
+		;;
+esac
+shift
+done
+
+tempfile="$(create_tempfile)" || exit 1
+tempfile2="$(create_tempfile)" || exit 1
+
+if [ X != "X$signin" ]
+then	get_cookie
+	exit
+fi
+
+if [ $# -lt 1 ]
+then	printf "%s" "$usage_text" >&2
+	echo "ERROR: Missing argument." >&2
+	exit 1
+fi
+
+if [ $# -gt 1 ]
+then	printf "%s" "$usage_text" >&2
+	echo "ERROR: Too many arguments." >&2
+	exit 1
+fi
+
+if [ "X$sha1_cache" != X ] && [ ! -f "$sha1_cache" ]
+then	echo "WARNING: sha1_cache is not a regular file: \"$sha1_cache\"" >&2
+	sha1_cache=
+fi
+
+# Make sure $file starts with / or ./
+# $pathname is used for sha1_cache lookups
+case "$1" in
+/*)	file="$1"
+	pathname="$1"
+	;;
+./*)	file="$1"
+	pathname="${cwd}/${1#./}"
+	;;
+*)	file="./$1"
+	pathname="${cwd}/$1"
+	;;
+esac
+
+echo "FILE: \"${pathname}\"" >&2
+
+if [ ! -f "$file" ]
+then	if [ -e "$file" ]
+	then	echo "ERROR: Not a regular file." >&2
+	else	echo "ERROR: File does not exist." >&2
+	fi
+	exit 1
+fi
+
+case "$output" in
+''|/*|./*) ;;
+*)	output="./$1";;
+esac
+
+case "$cookie_file" in
+''|/*|./*) ;;
+*)	cookie_file="./$1";;
+esac
+
+case "$log_file" in
+''|/*|./*) ;;
+*)	log_file="./$1";;
+esac
+
+if [ X != "X$signin" ] && [ X = "X$cookie" ] && [ -d "$config_dir" ]
+then	cookie_file="$config_dir/cookie"
+fi
+
+if [ X = "X$cookie_file" ] && [ X != "X$submit$signin" ]
+then	echo "ERROR: The options --submit and --signin require --cookie." >&2
+	exit 1
+fi
+
+if [ X = "X$import" ]
+then	filesize=$(get_filesize "$file") || exit 1
+else	meta='yes'
+fi
+
+if [ X = "X$meta$judgement" ]
+then	echo "ERROR: Either --import, --meta or --judgement is required." >&2
+	exit 1
+fi
+
+if [ X = "X$submit$meta" ] && [ X != "X$judgement$explanation" ]
+then	echo "ERROR: The options --judgement and explanations require --submit, --meta or --import." >&2
+	exit 1
+fi
+
+if [ X != "X$cookie_file" ]
+then
+	if [ -f "$cookie_file" ]
+	then	read cookie < "$cookie_file"
+	else	cookie=
+	fi
+
+	case "$cookie" in
+	'Set-Cookie: ad_user_login='?*);;
+	'')
+		echo "ERROR: Authentication cookie required!" >&2
+		echo "ERROR: Log into your Bitzi.com account and store" >&2
+		echo "ERROR: the ad_user_login cookie in \"$cookie_file\"" >&2
+		exit 1
+		;;
+	*)
+		echo "ERROR: The cookie file is incorrect." >&2
+		echo "ERROR: Expected \"Set-Cookie: ad_user_login=SECRET\"." >&2
+		exit 1
+		;;
+	esac
+fi
+
+if [ X != "X$import" ]
+then import_metadata > "$tempfile"
+elif [ X != "X$meta" ]
+then generate_metadata > "$tempfile"
+else bitprint="$(get_bitprint "$pathname")"
+fi
+
+if [ "X$output" = X ]
+then
+	if [ X != "X$print" ]
+	then cat "$tempfile"
+	fi
+else	cat "$tempfile" > "$output"
+fi
+
+if [ X = "X$submit" ]
+then	exit
+fi
+
+if [ X != "X$meta" ]
+then
+case "$batch" in
+'yes')
+	cat "$tempfile" >&2
+	;;
+*)
+	while :
+	do
+		echo 'METADATA:' >&2
+		cat "$tempfile" >&2
+		echo >&2
+
+		while : 
+		do
+			echo 'QUESTION: Do you want to edit the data? [y/n]' >&2
+			read answer < /dev/tty
+			case "$answer" in
+			y|Y|n|N) break;;
+			esac
+		done
+			
+		case "$answer" in
+		n|N)	break
+			;;
+		y|Y)
+			if ${editor} "$tempfile"
+			then 	echo 	'Successfully edited.' >&2
+				continue
+			else	echo "ERROR: ${editor} \"$tempfile\" failed." >&2
+				exit 1
+			fi
+			;;
+		*)	continue
+			;;
+		esac
+
+	done
+	;;
+esac
+fi
+
+if [ X != "X$import" ]
+then
+  # extract judgement, explanation and bitprint because submit_metadata
+  # will overwrite $tempfile
+  while read line
+  do
+	case "$line" in
+	''|'#'*|[a-z][a-z0-9]*=*)
+		;;
+	judgement=*)
+		if [ X = "X$judgement" ]; then judgement="${line#*=}"; fi
+		;;
+	explanation=*)
+		if [ X = "X$explanation" ]; then explanation="${line#*=}"; fi
+		;;
+	bitprint=*)
+		if [ X = "X$bitprint" ]; then bitprint="${line#*=}"; fi
+		;;
+	*)	echo "ERROR: Bad line in metadata file: \"$line\"" >&2
+		exit 1
+		;;
+	esac
+  done < "$tempfile" 
+fi
+
+if [ X != "X$meta" ] 
+then submit_metadata
+fi
+
+if [ X != "X$judgement$explanation" ]
+then submit_judgement
+fi
+
+exit

@@ -27,8 +27,7 @@ bitter		# file hashing of bitprints (unless it's all cached)
 bc		# mathematical calculations
 ogginfo		# extract average bitrate from Ogg/Vorbis files
 
-bitter is available here:
-http://ghostwhitecrab.de/bitter/
+bitter is available from the SVN repository of gtk-gnutella.
 
 
 USAGE:
