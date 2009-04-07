@@ -224,7 +224,9 @@ main(int argc, char *argv[])
   }
   if (quiet) {
 	fflush(stderr);
-	freopen("/dev/null", "w", stderr);
+	if (NULL == freopen("/dev/null", "w", stderr)) {
+		exit(EXIT_FAILURE);
+	}
   }
   if (print_tags(filename)) {
 	fprintf(stderr, "ERROR: Cannot handle file: \"%s\"\n", filename);
