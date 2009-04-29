@@ -81,7 +81,7 @@ EOF
 	if [ "X$debug" != X ]; then cat "$tempfile" >&2; fi
 	if [ "X$debug" != X ]; then cat "$tempfile2" >&2; fi
 
-	cookie="$(sed -n 's,^\(Set-Cookie: ad_user_login=[a-zA-Z0-9%]*\).*$,\1,p' < "$tempfile2")"
+	cookie="$(sed -n 's,^\(Set-Cookie: ad_user_login=[a-zA-Z0-9%_+-]*\).*$,\1,p' < "$tempfile2")"
 
 	if [ X = "X$cookie" ]
 	then	echo >&2
@@ -491,6 +491,9 @@ application/octet-stream)
 	asf)	if [ X != "X$video_format" ]
 		then	audio_format=
 			mime_type='video/x-ms-asf'
+		elif [ X != "X$audio_format" ]
+		then	audio_format=
+			mime_type='audio/x-ms-asf'
 		fi
 		;;
 	esac 
@@ -498,6 +501,9 @@ application/octet-stream)
 esac
 
 case "$mime_type" in
+audio/x-ms-asf)
+	duration=
+	;;
 audio/*)
 	# decode to pcm for reliable "duration", with VBR mplayer lies
 	printf 'STATUS: Calculating duration of audio track...' >&2
@@ -554,9 +560,15 @@ case "$mime_type" in
 	esac
 	;;
 
+'audio/x-ms-asf')
+	case "$audio_codec" in
+	ffwmav2) audio_format='WMAv2';;
+	esac
+	;;
+
 video/mpeg)
 	case "$video_format" in
-	mpegpes|mpeg12)	video_format='video/mpeg';;
+	mpegpes|mpeg12|ffmpeg1)	video_format='video/mpeg';;
 	*)		video_format=;;
 	esac
 	audio_format=
@@ -573,6 +585,12 @@ video/mp4)
 	*)		video_format=
 			;;
 	esac
+	audio_format=
+	;;
+
+video/quicktime)
+	video_codec="$video_format"
+	video_format='video/quicktime'
 	audio_format=
 	;;
 
@@ -670,6 +688,13 @@ mpg2)
 	video_codec='MPEG-2'
 	;;
 
+ffmpeg1)
+	video_codec='MPEG-1'
+	;;
+
+ffodivx)
+	video_codec='divx'
+	;;
 ''|*)
 	video_codec=
 	;;

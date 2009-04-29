@@ -17,8 +17,10 @@ htmlencode: htmlencode.c
 
 bitzify:
 
-install: all check
+install-anyway: all
 	cp -i -- first20 urlencode htmlencode bitzify "$(PREFIX)/bin/"
+
+install: check install-anyway
 
 distclean: clobber
 
