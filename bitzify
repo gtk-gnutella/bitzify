@@ -563,6 +563,7 @@ case "$mime_type" in
 'audio/x-ms-asf')
 	case "$audio_codec" in
 	ffwmav2) audio_format='WMAv2';;
+	wma9dmo) audio_format='wma9dmo';;
 	esac
 	;;
 
@@ -658,7 +659,7 @@ case "$video_codec" in
 	video_codec='H.264'
 	;;
 
-[Dd][Ii][Vv][Xx])
+ffodivx|[Dd][Ii][Vv][Xx])
 	video_codec='divx'
 	;;
 
@@ -666,8 +667,16 @@ case "$video_codec" in
 	video_codec='div3'
 	;;
 
-[Ww][Mm][Vv]3)
-	video_codec='wmv3'
+ffmp41|[Mm][Pp][Gg]4)
+	video_codec='MPG4'
+	;;
+
+[Mm][Ss][Ss]2)
+	video_codec='MSS2'
+	;;
+
+[Ww][Mm][Vv][1-9])
+	video_codec="wmv${video_codec#???}"
 	;;
 
 0x10000001)	
@@ -692,9 +701,10 @@ ffmpeg1)
 	video_codec='MPEG-1'
 	;;
 
-ffodivx)
-	video_codec='divx'
+ffsvq1|[Ss][Vv][Qq]1)
+	video_codec='SVQ1'
 	;;
+
 ''|*)
 	video_codec=
 	;;
@@ -1236,8 +1246,6 @@ then
   while read line
   do
 	case "$line" in
-	''|'#'*|[a-z][a-z0-9]*=*)
-		;;
 	judgement=*)
 		if [ X = "X$judgement" ]; then judgement="${line#*=}"; fi
 		;;
@@ -1246,6 +1254,8 @@ then
 		;;
 	bitprint=*)
 		if [ X = "X$bitprint" ]; then bitprint="${line#*=}"; fi
+		;;
+	''|'#'*|[a-z][a-z0-9]*=*)
 		;;
 	*)	echo "ERROR: Bad line in metadata file: \"$line\"" >&2
 		exit 1
