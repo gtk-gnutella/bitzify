@@ -217,7 +217,7 @@ submit_judgement()
 	2|[Cc][Oo][Mm][Pp][Ll][Ee][Tt][Ee])			judgement=2;;
 	0|[Nn][Oo][Rr][Mm][Aa][Ll])				judgement=0;;
 	-2|[Ss][Uu][Bb][Ss][Tt][Aa][Nn][Dd][Aa][Rr][Dd])	judgement=-2;;
-	-3[Dd][Aa][Mm][Aa][Gg][Ee][Dd])				judgement=-3;;
+	-3|[Dd][Aa][Mm][Aa][Gg][Ee][Dd])			judgement=-3;;
 	-3|[Ii][Nn][Cc][Oo][Mm][Pp][Ll][Ee][Tt][Ee])		judgement=-3;;
 	-4|[Dd][Aa][Nn][Gg][Ee][Rr][Oo][Uu][Ss])		judgement=-4;;
 	-4|[Mm][Ii][Ss][Ll][Ee][Aa][Dd][Ii][Nn][Gg])		judgement=-4;;
@@ -257,6 +257,18 @@ submit_judgement()
 			exit 1
 		fi
 	fi
+}
+
+unsupported_file()
+{
+	{
+		printf 'ERROR: Unsupported file:\n'
+		printf '  MIME type: %s\n' "$mime_type" 
+		printf '  audio codec: %s\n' "$detected_audio_codec" 
+		printf '  video codec: %s\n' "$detected_video_codec" 
+		printf '  audio format: %s\n' "$detected_audio_format" 
+		printf '  video format: %s\n' "$detected_video_format" 
+	} >&2
 }
 
 print_help()
@@ -374,6 +386,29 @@ tag.tiger.tree=base32
 EOF
 }
 
+video_codec_normalize()
+{
+	video_codec="$1"
+
+case "$video_codec" in
+[Xx][Vv][Ii][Dd]|[Dd][Xx]50|[Ff][Mm][Pp]4|mp4v|3[iI][vV]2) video_codec='xvid' ;;
+[Aa][Vv][Cc]1|[HhxX]264|[Hh].264)	video_codec='H.264' ;;
+ffodivx|[Dd][Ii][Vv][Xx])		video_codec='divx' ;;
+[Mm][Pp]43|[Dd][Ii][Vv]3)		video_codec='div3' ;;
+[Ii][Vv]50)				video_codec='IV50' ;;
+ffmp41|[Mm][Pp][Gg]4)			video_codec='MPG4' ;;
+ffmp42|[Mm][Pp]42)			video_codec='MP42' ;;
+[Mm][Ss][Ss]2)				video_codec='MSS2' ;;
+[Ww][Mm][Vv][1-9])			video_codec="wmv${video_codec#???}" ;;
+0x1000000[12])				video_codec="MPEG-${video_codec#0x1000000}";;
+mpg2)					video_codec='MPEG-2';;
+ffmpeg1)				video_codec='MPEG-1' ;;
+ffsvq1|[Ss][Vv][Qq]1)			video_codec='SVQ1' ;;
+''|*)					video_codec= ;;
+esac
+	echo "$video_codec"
+}
+
 generate_metadata()
 {
 mime_type="$(file -bi "$file")"
@@ -436,6 +471,7 @@ video_fps=
 video_height=
 video_width=
 
+# NOTE: video_format and video_codec are intentionally swapped
 while read line
 do
 	case "$line" in
@@ -488,12 +524,10 @@ audio/ogg)
 
 application/octet-stream)
 	case "$demuxer" in
-	asf)	if [ X != "X$video_format" ]
-		then	audio_format=
-			mime_type='video/x-ms-asf'
-		elif [ X != "X$audio_format" ]
-		then	audio_format=
-			mime_type='audio/x-ms-asf'
+	asf)	if [ X != "X$video_format$video_codec" ]
+		then	mime_type='video/x-ms-asf'
+		elif [ X != "X$audio_format$audio_codec" ]
+		then	mime_type='audio/x-ms-asf'
 		fi
 		;;
 	esac 
@@ -501,10 +535,23 @@ application/octet-stream)
 esac
 
 case "$mime_type" in
-audio/x-ms-asf)
-	duration=
+application/octet-stream)
+	case "$video_format" in
+	mp4v) mime_type='video/mp4';;
+	esac
 	;;
-audio/*)
+esac
+
+detected_audio_codec="$audio_codec"
+detected_video_codec="$video_codec"
+detected_audio_format="$audio_format"
+detected_video_format="$video_format"
+
+video_codec="$(video_codec_normalize "$video_codec")"
+
+# Bitzi supports duration only mp3, vorbis, wav and videos
+case "$audio_format" in
+mp3|vorbis)
 	# decode to pcm for reliable "duration", with VBR mplayer lies
 	printf 'STATUS: Calculating duration of audio track...' >&2
 	duration="$(mplayer -really-quiet -vo null -af resample=8000,format=u8,channels=1 -ao pcm:nowaveheader:file=/dev/stdout -- "$file" | wc -c)" || exit 1
@@ -564,33 +611,27 @@ case "$mime_type" in
 	case "$audio_codec" in
 	ffwmav2) audio_format='WMAv2';;
 	wma9dmo) audio_format='wma9dmo';;
+	pcm) audio_format='pcm';;
 	esac
 	;;
 
 video/mpeg)
-	case "$video_format" in
-	mpegpes|mpeg12|ffmpeg1)	video_format='video/mpeg';;
+	case "$video_codec" in
+	MPEG-[12])	video_format='video/mpeg';;
 	*)		video_format=;;
 	esac
 	audio_format=
 	;;
 
 video/mp4)
-	case "$video_format" in
-	ffodivx)	video_format='video/mp4'
-			video_codec='xvid'
-			;;
-	avc1|ffh264|x264)	video_format='video/mp4'
-			video_codec='H.264'
-			;;
-	*)		video_format=
-			;;
+	case "$video_codec" in
+	xvid|H.264)	video_format='video/mp4';;
+	*)		video_format=;;
 	esac
 	audio_format=
 	;;
 
 video/quicktime)
-	video_codec="$video_format"
 	video_format='video/quicktime'
 	audio_format=
 	;;
@@ -610,6 +651,12 @@ application/x-zip)
 	audio_format=
 	video_format=
 	file_format='zip'
+	;;
+
+application/x-dosexec)
+	audio_format=
+	video_format=
+	file_format='exe'
 	;;
 
 text/plain|text/plain\;*)
@@ -645,76 +692,14 @@ esac
 
 case "$video_format$audio_format$file_format" in
 '')
-	printf 'ERROR: Unsupported format: %s\n' "$mime_type" >&2
+	unsupported_file
 	exit 1;;
-esac
-
-# Normalize video codec
-case "$video_codec" in
-[Xx][Vv][Ii][Dd]|[Dd][Xx]50|[Ff][Mm][Pp]4|mp4v|3[iI][vV]2)
-	video_codec='xvid'
-	;;
-
-[Aa][Vv][Cc]1|[HhxX]264|[Hh].264)
-	video_codec='H.264'
-	;;
-
-ffodivx|[Dd][Ii][Vv][Xx])
-	video_codec='divx'
-	;;
-
-[Mm][Pp]43|[Dd][Ii][Vv]3)
-	video_codec='div3'
-	;;
-
-ffmp41|[Mm][Pp][Gg]4)
-	video_codec='MPG4'
-	;;
-
-[Mm][Ss][Ss]2)
-	video_codec='MSS2'
-	;;
-
-[Ww][Mm][Vv][1-9])
-	video_codec="wmv${video_codec#???}"
-	;;
-
-0x10000001)	
-	case "$video_format" in
-	video/mpeg)	video_codec='MPEG-1';;
-	*)		video_codec=;;
-	esac
-	;;
-
-0x10000002)
-	case "$video_format" in
-	video/mpeg|video/mp2p)	video_codec='MPEG-2';;
-	*)			video_codec=;;
-	esac
-	;;
-
-mpg2)
-	video_codec='MPEG-2'
-	;;
-
-ffmpeg1)
-	video_codec='MPEG-1'
-	;;
-
-ffsvq1|[Ss][Vv][Qq]1)
-	video_codec='SVQ1'
-	;;
-
-''|*)
-	video_codec=
-	;;
-
 esac
 
 case "$file_format" in
 '')
 	case "$video_codec$audio_format" in
-	'')	printf 'ERROR: Unsupported codec: %s\n' "$mime_type" >&2
+	'')	unsupported_file	
 		exit 1
 		;;
 	esac
@@ -779,7 +764,7 @@ filename="${file##*/}"
 		video_fps="${video_fps%%.*}"
 		test "$video_fps" = 0 && video_fps=
 
-		# Bitzi expect kbps (integer)
+		# Bitzi expect kBit/s (integer)
 		video_bitrate="$(echo "$video_bitrate / 1000" | bc)"
 		video_bitrate="${video_bitrate%%.*}"
 		test "$video_bitrate" = 0 && video_bitrate=

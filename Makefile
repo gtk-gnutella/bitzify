@@ -18,7 +18,7 @@ htmlencode: htmlencode.c
 bitzify:
 
 install-anyway: all
-	cp -i -- first20 urlencode htmlencode bitzify "$(PREFIX)/bin/"
+	cp -i -- audiotags first20 urlencode htmlencode bitzify "$(PREFIX)/bin/"
 
 install: check install-anyway
 
