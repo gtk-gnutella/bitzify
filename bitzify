@@ -396,6 +396,7 @@ case "$video_codec" in
 ffodivx|[Dd][Ii][Vv][Xx])		video_codec='divx' ;;
 [Mm][Pp]43|[Dd][Ii][Vv]3)		video_codec='div3' ;;
 [Ii][Vv]50)				video_codec='IV50' ;;
+[Qq][Dd][Rr][Ww])			video_codec='QDRW' ;;
 ffmp41|[Mm][Pp][Gg]4)			video_codec='MPG4' ;;
 ffmp42|[Mm][Pp]42)			video_codec='MP42' ;;
 [Mm][Ss][Ss]2)				video_codec='MSS2' ;;
